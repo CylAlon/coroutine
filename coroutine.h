@@ -18,6 +18,7 @@ typedef struct CorNode CorNode_t;
 #define Cor_Period(ms) ({ms==1?1:ms-1;}) // 定时器周期
 
 
+
 typedef enum {
     COR_RUN = 0, // 运行
     COR_SLEEP, // 休眠
