@@ -1,36 +1,41 @@
 /**
  * @file coroutine.c
  * @brief Coroutine implementation.
- 
-                                                                                                    
-                                       .                            .                                 
-         .......  .                  ...             .           ....                                 
-       ...      ...                   ..            ..            ...                                 
-      ..         ..                   ..            ...            ..                                 
-     ...          .                   ..           ....            ..                                 
-    ...           .                   ..           ....            ..                                 
-    ...                               ..           . ...           ..                                 
-   ...               .....     ...    ..          ..  ..           ..       .....        .   ...      
-   ...                ....      ..    ..          .   ...          ..      ..   ...    ...  .....     
-   ...                 ..       .     ..         ..   ...          ..     ..     ...    ....   ...    
-   ...                 ...     ..     ..         .     ...         ..    ..       ..    ...     ..    
-   ...                  ..     .      ..        ..     ...         ..    ..       ...   ..      ..    
-   ...                  ...    .      ..        ..     ...         ..    ..       ...   ..      ..    
-   ...                   ..   ..      ..        ...........        ..    ..       ...   ..      ..    
-   ...                   ...  .       ..       ..       ...        ..    ..       ...   ..      ..    
-    ...                   ..  .       ..       .         ...       ..    ..       ...   ..      ..    
-    ...                   ....        ..      ..         ...       ..    ...      ..    ..      ..    
-     ...          .        ...        ..      .           ...      ..     ..      ..    ..      ..    
-      ....      ..         ...        ..     ..           ...      ..     ...    ..     ...     ..    
-        ........            .        ....   ....         .....    ....     .......     ....    ....   
-           ..               .                                                 .                       
-                           .                                                                          
-                           .                                                                          
-                          .                                                                           
-                      .....                                                                           
-                      ....                                                                            
-                                                                                                      
-                                                                                                      
+ * @note This coroutine is used in single chip microcomputer.
+ *       Coroutine concurrency is implemented here, but not true concurrency, just switching tasks in a single thread.
+ *       All tasks appear to be executing simultaneously, but they are actually switching execution in a single thread.
+ *       Then using this library is like using a bare shoe, only it makes complex code look simpler.
+ *       Bare metal does not have resource access conflicts, so it does not need any synchronization mechanism (mutex, semaphore).
+ *       Because of the high cost of RTOS, simple tasks or low-end chips can not use RTOS, especially complex logic/high-end chips directly on linux, there is no need for RTOS.
+
+                                      .                            .
+         .......  .                  ...             .           ....
+       ...      ...                   ..            ..            ...
+      ..         ..                   ..            ...            ..
+     ...          .                   ..           ....            ..
+    ...           .                   ..           ....            ..
+    ...                               ..           . ...           ..
+   ...               .....     ...    ..          ..  ..           ..       .....        .   ...
+   ...                ....      ..    ..          .   ...          ..      ..   ...    ...  .....
+   ...                 ..       .     ..         ..   ...          ..     ..     ...    ....   ...
+   ...                 ...     ..     ..         .     ...         ..    ..       ..    ...     ..
+   ...                  ..     .      ..        ..     ...         ..    ..       ...   ..      ..
+   ...                  ...    .      ..        ..     ...         ..    ..       ...   ..      ..
+   ...                   ..   ..      ..        ...........        ..    ..       ...   ..      ..
+   ...                   ...  .       ..       ..       ...        ..    ..       ...   ..      ..
+    ...                   ..  .       ..       .         ...       ..    ..       ...   ..      ..
+    ...                   ....        ..      ..         ...       ..    ...      ..    ..      ..
+     ...          .        ...        ..      .           ...      ..     ..      ..    ..      ..
+      ....      ..         ...        ..     ..           ...      ..     ...    ..     ...     ..
+        ........            .        ....   ....         .....    ....     .......     ....    ....
+           ..               .                                                 .
+                           .
+                           .
+                          .
+                      .....
+                      ....
+
+
 */
 
 #include "coroutine.h"
@@ -43,9 +48,8 @@ static void corSetLabel(uint32_t *label);
 
 static uint32_t *corGetLabel(void);
 
-
-CorHandle_t CorIdleHandle=0;
-uint32_t (*getTick)(void)=NULL;
+CorHandle_t CorIdleHandle = 0;
+uint32_t (*getTick)(void) = NULL;
 struct
 {
     int8_t cap;
@@ -86,12 +90,11 @@ struct
 #define isTerminated(handle) (COR_STATE(handle) == COR_TERMINATED)
 #define isNone(handle) (COR_STATE(handle) == COR_NONE)
 #define isIdle(handle) ((handle) == CorIdleHandle)
-#define isNotNull(handle) ((handle)!=NULL&&(*handle)!=-1)
+#define isNotNull(handle) ((handle) != NULL && (*handle) != -1)
 
-
-bool CorInit(int8_t cap,uint32_t (*getTick1ms)(void))
+bool CorInit(int8_t cap, uint32_t (*getTick1ms)(void))
 {
-    if (cap <= 1 || cap > COR_MAX_CAP||getTick1ms==NULL)
+    if (cap <= 1 || cap > COR_MAX_CAP || getTick1ms == NULL)
     {
         return false;
     }
@@ -121,7 +124,7 @@ void CorDestroy(void)
 
 bool CorCreate(CorHandle_t *handle, void (*func)(void *), void *arg)
 {
-    if (handle == NULL||*handle!=-1 || func == NULL)
+    if (handle == NULL || *handle != -1 || func == NULL)
     {
         return false;
     }
@@ -139,10 +142,9 @@ bool CorCreate(CorHandle_t *handle, void (*func)(void *), void *arg)
     return false;
 }
 
-
 bool CorDelete(CorHandle_t *handle)
 {
-    if (isNotNull(handle)|| !isIdle(*handle) || isNone(*handle))
+    if (isNotNull(handle) || !isIdle(*handle) || isNone(*handle))
     {
         return false;
     }
@@ -186,7 +188,7 @@ void Suspend(CorHandle_t *handle)
         toSupend(INDEX);
         return;
     }
-    if (*handle==-1||isNone(*handle) || isTerminated(*handle) || isCreated(*handle))
+    if (*handle == -1 || isNone(*handle) || isTerminated(*handle) || isCreated(*handle))
     {
         return;
     }
@@ -195,7 +197,7 @@ void Suspend(CorHandle_t *handle)
 
 void CorResume(CorHandle_t *handle)
 {
-    if (*handle==-1||handle == NULL || isNone(*handle) || isTerminated(*handle))
+    if (*handle == -1 || handle == NULL || isNone(*handle) || isTerminated(*handle))
     {
         return;
     }
@@ -234,7 +236,6 @@ void CorSetTimeout(uint32_t timeout)
     COR_TIMEOUT(INDEX) = timeout;
     COR_LAST_TICK(INDEX) = getTick();
 }
-
 
 void *CorBegin(void *label)
 {
@@ -281,7 +282,7 @@ static int8_t corGetNextTaskId(void)
     static uint32_t tick = 0;
     uint32_t mTick = getTick();
     int8_t index = INDEX;
-    if (index!=-1&&isReady(index) && mTick != tick)
+    if (index != -1 && isReady(index) && mTick != tick)
     {
         tick = mTick;
         toRunning(index);
@@ -322,3 +323,18 @@ __attribute__((weak)) void CorIdleFunc(void *arg)
     }
     End();
 }
+
+/*
+错误处理：您可以考虑在函数返回布尔值的情况下提供更详细的错误信息，以便调用方能够处理错误情况。例如，当创建协程失败时，返回一个错误代码来指示失败的原因。
+
+内存管理：在删除协程时，您可以释放相关的内存资源，以防止内存泄漏。确保在删除协程时，清理相关的数据结构。
+
+更灵活的调度策略：您可以考虑引入更灵活的调度策略，例如优先级调度或时间片轮转调度，以满足不同场景下的需求。
+
+增加协程通信：考虑在协程之间实现通信机制，以便它们能够进行相互协作和共享数据。这可以通过引入消息队列、互斥锁等机制来实现。
+
+异常处理：考虑引入异常处理机制，以便协程能够捕获和处理异常，以增强代码的健壮性和可靠性。
+
+更全面的测试：为您的协程库编写更全面的测试用例，覆盖各种边界情况和异常情况，以确保库的正确性和稳定性。
+
+*/

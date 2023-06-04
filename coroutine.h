@@ -1,8 +1,13 @@
 /**
  * @file coroutine.c
  * @brief Coroutine implementation.
- 
-                                                                                                    
+ * @note This coroutine is used in single chip microcomputer.
+ *       Coroutine concurrency is implemented here, but not true concurrency, just switching tasks in a single thread.
+ *       All tasks appear to be executing simultaneously, but they are actually switching execution in a single thread.
+ *       Then using this library is like using a bare shoe, only it makes complex code look simpler.
+ *       Bare metal does not have resource access conflicts, so it does not need any synchronization mechanism (mutex, semaphore).
+ *       Because of the high cost of RTOS, simple tasks or low-end chips can not use RTOS, especially complex logic/high-end chips directly on linux, there is no need for RTOS.
+                                                                                                   
                                        .                            .                                 
          .......  .                  ...             .           ....                                 
        ...      ...                   ..            ..            ...                                 
@@ -164,7 +169,6 @@ void CorEnd(void *label);
  * @param t Pause duration in milliseconds.
  */
 #define CorSleep(t) CorSetTimeout(t);CorYield()
-
 
 
 #endif //COROUTINE_H
