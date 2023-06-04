@@ -1,129 +1,324 @@
-#include "coroutine.h"
-#include "stdlib.h"
-/*
- * 轻量级协程库，基于C语言实现
- * 作者：CylAlon
- * 日期：2020-07
- * 更改日期：2020-12-15
- * 版本：1.0.0
- */
-
-/**************************结构体申明**************************/
-// 协程结构体,没有使用static修饰，可以在其他文件中使用（这是应为.h文件中一些宏会直接使用到这个变量）
-// 不适用static修饰，就不会用函数get/set来访问这个变量，而是直接访问，这样会提高效率（用在单片机上）
-Cor_t Coroutine;
-/**************************具体实现**************************/
-
 /**
- * @brief  协程初始化
- * @param  cap: 协程的最大数目
- */
-void Cor_Init(uint8_t cap, void *context)
+ * @file coroutine.c
+ * @brief Coroutine implementation.
+ 
+                                                                                                    
+                                       .                            .                                 
+         .......  .                  ...             .           ....                                 
+       ...      ...                   ..            ..            ...                                 
+      ..         ..                   ..            ...            ..                                 
+     ...          .                   ..           ....            ..                                 
+    ...           .                   ..           ....            ..                                 
+    ...                               ..           . ...           ..                                 
+   ...               .....     ...    ..          ..  ..           ..       .....        .   ...      
+   ...                ....      ..    ..          .   ...          ..      ..   ...    ...  .....     
+   ...                 ..       .     ..         ..   ...          ..     ..     ...    ....   ...    
+   ...                 ...     ..     ..         .     ...         ..    ..       ..    ...     ..    
+   ...                  ..     .      ..        ..     ...         ..    ..       ...   ..      ..    
+   ...                  ...    .      ..        ..     ...         ..    ..       ...   ..      ..    
+   ...                   ..   ..      ..        ...........        ..    ..       ...   ..      ..    
+   ...                   ...  .       ..       ..       ...        ..    ..       ...   ..      ..    
+    ...                   ..  .       ..       .         ...       ..    ..       ...   ..      ..    
+    ...                   ....        ..      ..         ...       ..    ...      ..    ..      ..    
+     ...          .        ...        ..      .           ...      ..     ..      ..    ..      ..    
+      ....      ..         ...        ..     ..           ...      ..     ...    ..     ...     ..    
+        ........            .        ....   ....         .....    ....     .......     ....    ....   
+           ..               .                                                 .                       
+                           .                                                                          
+                           .                                                                          
+                          .                                                                           
+                      .....                                                                           
+                      ....                                                                            
+                                                                                                      
+                                                                                                      
+*/
+
+#include "coroutine.h"
+
+static void corSetLabelFlag(bool labelFlag);
+
+static bool corGetLabelFlag(void);
+
+static void corSetLabel(uint32_t *label);
+
+static uint32_t *corGetLabel(void);
+
+
+CorHandle_t CorIdleHandle=0;
+uint32_t (*getTick)(void)=NULL;
+struct
 {
-    Coroutine.Cap = cap;
-    Coroutine.Id = 0;
-    Coroutine.Size = 0;
-    Coroutine.Context = context;
-    Coroutine.Table = (CorNode_t *) malloc(sizeof(CorNode_t) * cap); //程序申请后就不会再修改大小，这里直接用malloc申请就好
+    int8_t cap;
+    int8_t index;
+    Coroutine_t *coroutines;
+} corSys;
+
+#define COR_MAX_CAP 32
+
+#define INDEX corSys.index
+#define CAP corSys.cap
+#define COR(handle) corSys.coroutines[handle]
+#define COR_STATE(handle) COR(handle).state
+#define COR_LABEL_FLAG(handle) COR(handle).labelFlag
+#define COR_LABEL(handle) COR(handle).label
+#define COR_FUNC(handle) COR(handle).func
+#define COR_ARG(handle) COR(handle).arg
+#define COR_TIMEOUT(handle) COR(handle).timeout
+#define COR_LAST_TICK(handle) COR(handle).lastTick
+
+#define CHANGE_STATE(handle, status) COR_STATE(handle) = status
+
+#define toReady(handle) CHANGE_STATE(handle, COR_READY)
+#define toRunning(handle) CHANGE_STATE(handle, COR_RUNNING)
+#define toBlocked(handle) CHANGE_STATE(handle, COR_BLOCKED)
+#define toWaiting(handle) CHANGE_STATE(handle, COR_WAITING)
+#define toSupend(handle) CHANGE_STATE(handle, COR_SUSPEND)
+#define toTerminated(handle) CHANGE_STATE(handle, COR_TERMINATED)
+#define toCreated(handle) CHANGE_STATE(handle, COR_CREATED)
+#define toNone(handle) CHANGE_STATE(handle, COR_NONE)
+
+#define isCreated(handle) (COR_STATE(handle) == COR_CREATED)
+#define isReady(handle) (COR_STATE(handle) == COR_READY)
+#define isRunning(handle) (COR_STATE(handle) == COR_RUNNING)
+#define isBlocked(handle) (COR_STATE(handle) == COR_BLOCKED)
+#define isWaiting(handle) (COR_STATE(handle) == COR_WAITING)
+#define isSupend(handle) (COR_STATE(handle) == COR_SUSPEND)
+#define isTerminated(handle) (COR_STATE(handle) == COR_TERMINATED)
+#define isNone(handle) (COR_STATE(handle) == COR_NONE)
+#define isIdle(handle) ((handle) == CorIdleHandle)
+#define isNotNull(handle) ((handle)!=NULL&&(*handle)!=-1)
+
+
+bool CorInit(int8_t cap,uint32_t (*getTick1ms)(void))
+{
+    if (cap <= 1 || cap > COR_MAX_CAP||getTick1ms==NULL)
+    {
+        return false;
+    }
+    corSys.coroutines = (Coroutine_t *)malloc(sizeof(Coroutine_t) * cap);
+    if (corSys.coroutines == NULL)
+    {
+        return false;
+    }
+    CAP = cap;
+    INDEX = -1;
+    memset(corSys.coroutines, 0, sizeof(Coroutine_t) * cap);
+    getTick = getTick1ms;
+    // 初始化idle协程
+    COR_FUNC(CorIdleHandle) = CorIdleFunc;
+    COR_ARG(CorIdleHandle) = NULL;
+    toReady(CorIdleHandle);
+    return true;
 }
 
-
-/**
- * @brief  创建协程任务
- * @param  handle: 句柄(指向CorNode_t地址)
- * @param  coroutine: 协程函数
- * @param  flag: 协程初始状态
- * @param  heap: 协程堆栈
- * @param  heapSize: 协程堆栈大小
- * @retval true: 创建成功 false: 创建失败
- */
-bool Cor_Create(CorHandle_t *handle, void (*coroutine)(CorNode_t *self, void *ctx),
-                CorState_t flag, uint8_t *stack, uint16_t stackCap)
+void CorDestroy(void)
 {
-    if (Coroutine.Size < Coroutine.Cap && coroutine != NULL)
+    free(corSys.coroutines);
+    corSys.coroutines = NULL;
+    CAP = 0;
+    INDEX = -1;
+}
+
+bool CorCreate(CorHandle_t *handle, void (*func)(void *), void *arg)
+{
+    if (handle == NULL||*handle!=-1 || func == NULL)
     {
-        Coroutine.Table[Coroutine.Size].Id = Coroutine.Size;
-        Coroutine.Table[Coroutine.Size].State = flag;
-        Coroutine.Table[Coroutine.Size].SleepTime = 0;
-        Coroutine.Table[Coroutine.Size].Tick = 0;
-        Coroutine.Table[Coroutine.Size].Anchor = 0;
-        Coroutine.Table[Coroutine.Size].Coroutine = coroutine;
-        Coroutine.Table[Coroutine.Size].Stack = stack;
-        Coroutine.Table[Coroutine.Size].StackCap = stackCap;
-        memset(Coroutine.Table[Coroutine.Size].Stack, 0, Coroutine.Table[Coroutine.Size].StackCap);
-        Coroutine.Table[Coroutine.Size].StackSize = 0;
-        *handle = &Coroutine.Table[Coroutine.Size];
-        Coroutine.Size++;
-        return true;
+        return false;
+    }
+    for (int i = 1; i < corSys.cap; ++i)
+    {
+        if (isNone(i))
+        {
+            COR_FUNC(i) = func;
+            COR_ARG(i) = arg;
+            toReady(i);
+            *handle = i;
+            return true;
+        }
     }
     return false;
 }
 
-void Cor_Stop(CorHandle_t *handle)
+
+bool CorDelete(CorHandle_t *handle)
 {
-    if (handle != NULL)
+    if (isNotNull(handle)|| !isIdle(*handle) || isNone(*handle))
     {
-        ((CorNode_t *) handle)->SleepTime = 0;
-        ((CorNode_t *) handle)->State = COR_STOP;
+        return false;
     }
+    toNone(*handle);
+    COR_FUNC(*handle) = NULL;
+    COR_ARG(*handle) = NULL;
+    COR_LABEL(*handle) = NULL;
+    COR_LABEL_FLAG(*handle) = false;
+    COR_TIMEOUT(*handle) = 0;
+    COR_LAST_TICK(*handle) = 0;
+    *handle = -1;
+    return true;
 }
 
-_Noreturn void Cor_Run(void)
+static int8_t switchNext(void)
+{
+    int8_t next = INDEX + 1;
+    if (next >= CAP)
+    {
+        next = 0;
+    }
+    INDEX = next;
+    return next;
+}
+
+void Yield(void *label)
+{
+    if (isNone(INDEX))
+    {
+        return;
+    }
+    toWaiting(INDEX);
+    CorSetTimeout(0);
+    corSetLabel(label);
+}
+
+void Suspend(CorHandle_t *handle)
+{
+    if (handle == NULL)
+    {
+        toSupend(INDEX);
+        return;
+    }
+    if (*handle==-1||isNone(*handle) || isTerminated(*handle) || isCreated(*handle))
+    {
+        return;
+    }
+    toSupend(*handle);
+}
+
+void CorResume(CorHandle_t *handle)
+{
+    if (*handle==-1||handle == NULL || isNone(*handle) || isTerminated(*handle))
+    {
+        return;
+    }
+    toReady(*handle);
+    CorSetTimeout(0);
+}
+
+void CorRestart(CorHandle_t *handle)
+{
+    CorResume(handle);
+    corSetLabelFlag(false);
+}
+
+static void corSetLabelFlag(bool labelFlag)
+{
+    COR_LABEL_FLAG(INDEX) = labelFlag;
+}
+
+static bool corGetLabelFlag(void)
+{
+    return COR_LABEL_FLAG(INDEX);
+}
+
+static void corSetLabel(uint32_t *label)
+{
+    COR_LABEL(INDEX) = label;
+}
+
+static uint32_t *corGetLabel(void)
+{
+    return COR_LABEL(INDEX);
+}
+
+void CorSetTimeout(uint32_t timeout)
+{
+    COR_TIMEOUT(INDEX) = timeout;
+    COR_LAST_TICK(INDEX) = getTick();
+}
+
+
+void *CorBegin(void *label)
+{
+    if (!corGetLabelFlag())
+    {
+        corSetLabel(label);
+        corSetLabelFlag(true);
+    }
+    return corGetLabel();
+}
+
+void CorEnd(void *label)
+{
+    corSetLabel(label);
+    corSetLabelFlag(false);
+}
+
+static void corTimeoutDisp(void)
+{
+    for (int i = 0; i < corSys.cap; i++)
+    {
+        if (isNone(i) || isTerminated(i) || isCreated(i) || !isWaiting(i))
+        {
+            continue;
+        }
+        if (COR_TIMEOUT(i) > 0)
+        {
+            uint32_t tick = getTick();
+            if (tick - COR_LAST_TICK(i) >= COR_TIMEOUT(i))
+            {
+                COR_LAST_TICK(i) = tick;
+                COR_TIMEOUT(i) = 0;
+                toReady(i);
+            }
+        }
+        else
+        {
+            toReady(i);
+        }
+    }
+}
+static int8_t corGetNextTaskId(void)
+{
+    static uint32_t tick = 0;
+    uint32_t mTick = getTick();
+    int8_t index = INDEX;
+    if (index!=-1&&isReady(index) && mTick != tick)
+    {
+        tick = mTick;
+        toRunning(index);
+        return index;
+    }
+    corTimeoutDisp();
+    index = switchNext();
+    // 循环一圈找到raday的任务
+    while (!isReady(index))
+    {
+        index = switchNext();
+    }
+    tick = mTick;
+    toRunning(index);
+    return index;
+}
+
+void CorStart(void)
 {
     for (;;)
     {
-        Cor_Handle();
-    }
-}
-
-static void Cor_Handle(void)
-{
-    for (int i = 0; i < Coroutine.Size; ++i)
-    {
-        // 任务调度
-        Coroutine.Id = i;
-        if (Coroutine.Table[i].State == COR_RUN)
+        int8_t index = corGetNextTaskId();
+        COR_FUNC(index)
+        (COR_ARG(index));
+        if (isRunning(index))
         {
-            Coroutine.Table[i].Coroutine(&Coroutine.Table[i], Coroutine.Context);
-        }
-        // 睡眠处理（这里使用轮询就足够了，如果时间要求特别精确可以替换为中断）
-        if (Coroutine.Table[i].State == COR_SLEEP && Coroutine.Table[i].SleepTime > 0)
-        {
-            if (Cor_GetTick() - Coroutine.Table[i].Tick >= Coroutine.Table[i].SleepTime)
-            {
-                Coroutine.Table[i].SleepTime = 0;
-                Coroutine.Table[Coroutine.Id].State = COR_RUN;
-            }
+            toReady(index);
         }
     }
 }
 
-/**************************下面是静态内存管理**************************/
-/**
- * @brief  申请内存
- * @param  handle: 句柄
- * @param  size: 申请的大小
- * @retval 申请的内存地址
- */
-uint8_t *Cor_Malloc(CorHandle_t *handle, uint16_t size)
+__attribute__((weak)) void CorIdleFunc(void *arg)
 {
-    if (handle != NULL || size == 0)
+    Begin()
     {
-        if (((CorNode_t *) handle)->StackSize + size <= ((CorNode_t *) handle)->StackCap)
-        {
-            ((CorNode_t *) handle)->StackSize += size;
-            return ((CorNode_t *) handle)->Stack + ((CorNode_t *) handle)->StackSize;;
-        }
+        printf("Function [>void CorIdleFunc(void *arg)<] is a default idle coroutine, please override this method externally.\r\n");
+        Suspend(NULL);
     }
-    return NULL;
-}
-
-void Cor_Free(CorHandle_t *handle)
-{
-    if (handle != NULL)
-    {
-        memset(((CorNode_t *) handle)->Stack, 0, ((CorNode_t *) handle)->StackCap);
-        ((CorNode_t *) handle)->StackSize = 0;
-
-    }
+    End();
 }

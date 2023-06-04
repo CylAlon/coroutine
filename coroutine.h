@@ -1,136 +1,170 @@
-#ifndef COROUTINE_H__
-#define COROUTINE_H__
+/**
+ * @file coroutine.c
+ * @brief Coroutine implementation.
+ 
+                                                                                                    
+                                       .                            .                                 
+         .......  .                  ...             .           ....                                 
+       ...      ...                   ..            ..            ...                                 
+      ..         ..                   ..            ...            ..                                 
+     ...          .                   ..           ....            ..                                 
+    ...           .                   ..           ....            ..                                 
+    ...                               ..           . ...           ..                                 
+   ...               .....     ...    ..          ..  ..           ..       .....        .   ...      
+   ...                ....      ..    ..          .   ...          ..      ..   ...    ...  .....     
+   ...                 ..       .     ..         ..   ...          ..     ..     ...    ....   ...    
+   ...                 ...     ..     ..         .     ...         ..    ..       ..    ...     ..    
+   ...                  ..     .      ..        ..     ...         ..    ..       ...   ..      ..    
+   ...                  ...    .      ..        ..     ...         ..    ..       ...   ..      ..    
+   ...                   ..   ..      ..        ...........        ..    ..       ...   ..      ..    
+   ...                   ...  .       ..       ..       ...        ..    ..       ...   ..      ..    
+    ...                   ..  .       ..       .         ...       ..    ..       ...   ..      ..    
+    ...                   ....        ..      ..         ...       ..    ...      ..    ..      ..    
+     ...          .        ...        ..      .           ...      ..     ..      ..    ..      ..    
+      ....      ..         ...        ..     ..           ...      ..     ...    ..     ...     ..    
+        ........            .        ....   ....         .....    ....     .......     ....    ....   
+           ..               .                                                 .                       
+                           .                                                                          
+                           .                                                                          
+                          .                                                                           
+                      .....                                                                           
+                      ....                                                                            
+                                                                                                      
+                                                                                                      
+*/
 
-#include "main.h"
+
+#ifndef COROUTINE_H
+#define COROUTINE_H
+
+
+
+#include "stdio.h"
 #include "stdbool.h"
-
-#ifndef ALIGN_1
-#define ALIGN_1 __attribute__((packed, aligned(1))) // aligned(1)：1字节对齐
-#endif
-typedef void *CorHandle_t;
-struct ALIGN_1 CorStruct;
-struct ALIGN_1 CorNode;
-typedef struct CorStruct Cor_t;
-typedef struct CorNode CorNode_t;
+#include  "stdlib.h"
+#include "string.h"
+#include "main.h"
 
 
-#define Cor_GetTick() HAL_GetTick() // 获取定时器滴答计数
-#define Cor_Period(ms) ({ms==1?1:ms-1;}) // 定时器周期
-
-
-
+typedef int8_t CorHandle_t;
+// Idle coroutine handle
+extern CorHandle_t CorIdleHandle;
 typedef enum {
-    COR_RUN = 0, // 运行
-    COR_SLEEP, // 休眠
-    COR_STOP, // 停止
-} CorState_t;
-
-struct CorNode {
-    uint8_t Id; // 协程自己的ID
-    __IO CorState_t State;// 协程状态
-    __IO uint8_t Anchor; // 跳转锚点
-    __IO uint32_t Tick; // 记录当前时间
-    __IO uint32_t SleepTime; // 休眠时间
-    uint8_t *Stack; // 协程堆栈
-    uint16_t StackSize; // 堆栈大小
-    uint16_t StackCap; // 堆栈容量
-    void (*Coroutine)(CorNode_t *self, void *context); //任务
-};
-
-struct CorStruct {
-    __IO uint8_t Id; // 协程当前处理的ID
-    uint8_t Cap; // 协程数量
-    __IO uint8_t Size;//协程数量
-    void *Context; // 协程上下文,可用协程公用的标志指针
-    CorNode_t *Table; // 协程表
-};
+    COR_NONE = 0,
+    COR_CREATED,  
+    COR_READY,    
+    COR_RUNNING,  
+    COR_BLOCKED,  
+    COR_WAITING,  
+    COR_SUSPEND,   
+    COR_TERMINATED  
+} CoroutineState;
 
 
-#define Cor_SetAnchor(anchor) goto__addr = &&COR_ANCHOR_##anchor;  return;   COR_ANCHOR_##anchor:
-//这个函数用于协程函数中的挂起协程
-#define Cor_Suspend(handle, anchor)do{                      \
-    Coroutine.Table[Coroutine.Id].SleepTime = 0;            \
-    if (handle == NULL)                                     \
-    {                                                       \
-        Coroutine.Table[Coroutine.Id].State = COR_STOP;     \
-        Cor_SetAnchor(anchor);                              \
-    } else                                                  \
-    {                                                       \
-        ((CorNode_t *) handle)->State = COR_STOP;          \
-    }                                                       \
-}while(0)
+typedef struct {
+    void (*func)(void *);
+
+    void *arg;
+    CoroutineState state;
+    bool labelFlag;
+    void *label;
+    uint32_t timeout;
+    uint32_t lastTick;
+    
+} Coroutine_t;
+
+/**
+ * @brief Default idle coroutine function. If not overridden externally, it performs default idle operations.
+ * @param arg Coroutine function argument.
+ */
+void CorIdleFunc(void *arg);
+/**
+ * @brief Initialize the coroutine library.
+ * @param cap Coroutine capacity.
+ * @param getTick1ms Pointer to a function that retrieves a 1-millisecond timestamp.
+ * @return Whether initialization is successful.
+ */
+bool CorInit(int8_t cap,uint32_t (*getTick1ms)(void));
+/**
+ * @brief Create a coroutine.
+ * @param handle Pointer to the coroutine handle.
+ * @param func Coroutine function pointer.
+ * @param arg Coroutine function argument.
+ * @return Whether creation is successful.
+ */
+bool CorCreate(CorHandle_t *handle, void (*func)(void *), void *arg);
+/**
+ * @brief Delete a coroutine.
+ * @param handle Pointer to the coroutine handle.
+ * @return Whether deletion is successful.
+ */
+bool CorDelete(CorHandle_t *handle);
+/**
+ * @brief Pause the execution of the coroutine and yield the CPU.
+ * @param label Coroutine execution label.
+ */
+void Yield(void *label);
+/**
+ * @brief Suspend the specified coroutine.
+ * @param handle Pointer to the coroutine handle. If NULL, suspends the current coroutine.
+ */
+void Suspend(CorHandle_t *handle);
+/**
+ * @brief Resume the execution of the specified coroutine.
+ * @param handle Pointer to the coroutine handle.
+ */
+void CorResume(CorHandle_t *handle);
+/**
+ * @brief Restart the specified coroutine.
+ * @param handle Pointer to the coroutine handle.
+ */
+void CorRestart(CorHandle_t *handle);
+/**
+ * @brief Start the coroutine scheduler and begin executing coroutines.
+ */
+void CorStart(void);
+
+/**
+ * @brief Set the timeout for a coroutine.
+ * @param timeout Timeout duration in milliseconds.
+ */
+void CorSetTimeout(uint32_t timeout);
 
 
-// 恢复/启动协程
-#define Cor_Resume(handle)do{                                       \
-    if (handle == NULL)                                             \
-    {                                                               \
-        Coroutine.Table[Coroutine.Id].State = COR_RUN;              \
-        Coroutine.Table[Coroutine.Id].SleepTime = 0;                \
-    } else                                                          \
-    {                                                               \
-        ((CorNode_t *) handle)->State = COR_RUN;                   \
-        ((CorNode_t *) handle)->SleepTime = 0;                     \
-    }                                                               \
-}while(0)
-#define Cor_Restart(handle) do{                                     \
-    if (handle == NULL)                                             \
-    {                                                               \
-        Coroutine.Table[Coroutine.Id].State = COR_RUN;              \
-        Coroutine.Table[Coroutine.Id].SleepTime = 0;                \
-        Coroutine.Table[Coroutine.Id].Anchor = 0;                   \
-        Cor_Free(Coroutine.Table[Coroutine.Id]);\
-    } else                                                          \
-    {                                                               \
-        ((CorNode_t *) handle)->State = COR_RUN;                   \
-        ((CorNode_t *) handle)->SleepTime = 0;                     \
-        ((CorNode_t *) handle)->Anchor = 0;                         \
-        Cor_Free(handle);                                    \
-    }                                                               \
-}while(0)
-
-//睡眠协程 该函数必须用在协程函数中的While中
-#define Cor_Sleep(time, anchor)do{                                      \
-    if(time>0)                                                          \
-    {                                                                   \
-        Coroutine.Table[Coroutine.Id].Anchor = anchor;                  \
-        Coroutine.Table[Coroutine.Id].SleepTime = Cor_Period(time);      \
-        Coroutine.Table[Coroutine.Id].Tick = Cor_GetTick();             \
-        Coroutine.Table[Coroutine.Id].State = COR_SLEEP;                 \
-        Cor_SetAnchor(anchor);                                          \
-    }                                                                   \
-}while(0)
-#define sleep Cor_Sleep
 
 
-// 该宏必须在协程函数中使用，且协程函数的参数必须取名self
-#define While(func) do{                                                 \
-    static void* goto__addr =&&COR_ANCHOR_0;                            \
-     if(Coroutine.Table[Coroutine.Id].Anchor!=0&&goto__addr!=NULL)      \
-     {                                                                  \
-         goto  *goto__addr;                                             \
-     }                                                                  \
-    COR_ANCHOR_0:                                                       \
-    func                                                                \
-    Coroutine.Table[Coroutine.Id].Anchor = 0;                           \
-    goto__addr = &&COR_ANCHOR_0;                                        \
-}while(0)
+void *CorBegin(void *label);
 
-extern Cor_t Coroutine;
+void CorEnd(void *label);
 
-void Cor_Init(uint8_t cap, void *context);
+#define JOINT(x, y) x##y
+#define CONCAT(x, y) JOINT(x, y)
+#define UNIQUE_LABEL CONCAT(label_, __LINE__)
 
-bool Cor_Create(CorHandle_t *handle, void (*coroutine)(CorNode_t *self, void *ctx),
-                CorState_t flag, uint8_t *stack, uint16_t stackCap);
+/**
+ * @note:
+ * 1. Begin() and End() must appear in pairs, or neither should appear. Otherwise, the coroutine will only be executed once.
+ * 2. "&&" in &&label is an extension syntax in GCC, representing the address of label.
+ * 3. "&&" may be highlighted with a red wavy underline in VSCode, but it doesn't affect compilation.
+ * 4. To resolve the red wavy underline in VSCode, you can add "compilerPath": "gcc" in .vscode/c_cpp_properties.json.
+ * 5. Alternatively, you can disable the red wavy underline prompt in VSCode, but it's not recommended.
+ * 6. No errors will occur in CLion.
+ * 7. Goto is used here to implement task switching.
+ * 8. Task switching can also be achieved using setjmp and longjmp, but they have lower efficiency than goto.
+ * 9. Switch/case can also be used for task switching.
+ * 10. However, when I previously used switch/case, formatting the code in CLion caused misalignment due to case indentation, resulting in messy code. Hence, I switched to using goto.
+ */
 
-_Noreturn void Cor_Run(void);
+#define Begin() goto *CorBegin(&&label_0);label_0:
+#define CorYield() Yield(&&UNIQUE_LABEL);return;UNIQUE_LABEL:
+#define End() CorEnd(&&label_0)
 
-void Cor_Stop(CorHandle_t *handle);
+/**
+ * @brief Pause for a specified duration within the coroutine.
+ * @param t Pause duration in milliseconds.
+ */
+#define CorSleep(t) CorSetTimeout(t);CorYield()
 
-static void Cor_Handle(void);
 
-uint8_t *Cor_Malloc(CorHandle_t *handle, uint16_t size);
 
-void Cor_Free(CorHandle_t *handle);
-
-#endif
+#endif //COROUTINE_H
