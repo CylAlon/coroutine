@@ -40,301 +40,241 @@
 
 #include "coroutine.h"
 
-static void corSetLabelFlag(bool labelFlag);
+static void CorExe(void);
 
-static bool corGetLabelFlag(void);
-
-static void corSetLabel(uint32_t *label);
-
-static uint32_t *corGetLabel(void);
-
+#define COROUTINE_MAX_SIZE (32)
 CorHandle_t CorIdleHandle = 0;
-uint32_t (*getTick)(void) = NULL;
 struct
 {
-    int8_t cap;
-    int8_t index;
-    Coroutine_t *coroutines;
-} corSys;
+    Coroutine_t *coroutine;
+    uint32_t (*getTick1ms)(void);
+    uint32_t tick;
+    struct
+    {
+        uint8_t cap : 5;
+        uint8_t currid : 5;
+        uint8_t alreadyInit : 1;
+    } bits;
+} param;
 
-#define COR_MAX_CAP 32
-
-#define INDEX corSys.index
-#define CAP corSys.cap
-#define COR(handle) corSys.coroutines[handle]
-#define COR_STATE(handle) COR(handle).state
-#define COR_LABEL_FLAG(handle) COR(handle).labelFlag
-#define COR_LABEL(handle) COR(handle).label
-#define COR_FUNC(handle) COR(handle).func
-#define COR_ARG(handle) COR(handle).arg
-#define COR_TIMEOUT(handle) COR(handle).timeout
-#define COR_LAST_TICK(handle) COR(handle).lastTick
-
-#define CHANGE_STATE(handle, status) COR_STATE(handle) = status
-
-#define toReady(handle) CHANGE_STATE(handle, COR_READY)
-#define toRunning(handle) CHANGE_STATE(handle, COR_RUNNING)
-#define toBlocked(handle) CHANGE_STATE(handle, COR_BLOCKED)
-#define toWaiting(handle) CHANGE_STATE(handle, COR_WAITING)
-#define toSupend(handle) CHANGE_STATE(handle, COR_SUSPEND)
-#define toTerminated(handle) CHANGE_STATE(handle, COR_TERMINATED)
-#define toCreated(handle) CHANGE_STATE(handle, COR_CREATED)
-#define toNone(handle) CHANGE_STATE(handle, COR_NONE)
-
-#define isCreated(handle) (COR_STATE(handle) == COR_CREATED)
-#define isReady(handle) (COR_STATE(handle) == COR_READY)
-#define isRunning(handle) (COR_STATE(handle) == COR_RUNNING)
-#define isBlocked(handle) (COR_STATE(handle) == COR_BLOCKED)
-#define isWaiting(handle) (COR_STATE(handle) == COR_WAITING)
-#define isSupend(handle) (COR_STATE(handle) == COR_SUSPEND)
-#define isTerminated(handle) (COR_STATE(handle) == COR_TERMINATED)
-#define isNone(handle) (COR_STATE(handle) == COR_NONE)
-#define isIdle(handle) ((handle) == CorIdleHandle)
-#define isNotNull(handle) ((handle) != NULL && (*handle) != -1)
-
-bool CorInit(int8_t cap, uint32_t (*getTick1ms)(void))
+static uint8_t CorGetNextId(uint8_t currid)
 {
-    if (cap <= 1 || cap > COR_MAX_CAP || getTick1ms == NULL)
+    return (currid + 1) % param.bits.cap;
+}
+
+bool CorInit(uint8_t cap, uint32_t (*getTick1ms)(void))
+{
+    assert_param(getTick1ms != NULL);
+    if (cap > COROUTINE_MAX_SIZE - 1)
     {
         return false;
     }
-    corSys.coroutines = (Coroutine_t *)malloc(sizeof(Coroutine_t) * cap);
-    if (corSys.coroutines == NULL)
+    param.bits.cap = cap + 1;
+    param.coroutine = (Coroutine_t *)malloc(sizeof(Coroutine_t) * param.bits.cap);
+    if (param.coroutine == NULL)
     {
         return false;
     }
-    CAP = cap;
-    INDEX = -1;
-    memset(corSys.coroutines, 0, sizeof(Coroutine_t) * cap);
-    getTick = getTick1ms;
-    // 初始化idle协程
-    COR_FUNC(CorIdleHandle) = CorIdleFunc;
-    COR_ARG(CorIdleHandle) = NULL;
-    toReady(CorIdleHandle);
+    memset(param.coroutine, 0, sizeof(Coroutine_t) * param.bits.cap);
+    param.getTick1ms = getTick1ms;
+    param.tick = 0;
+    param.bits.currid = 0;
+    param.bits.alreadyInit = 1;
+    CorCreateTask(&CorIdleHandle, CorIdleFunc, NULL);
+    return true;
+}
+void CorDeinit(void) {
+    if (param.coroutine != NULL) {
+        free(param.coroutine);
+        param.coroutine = NULL;
+    }
+    // Reset all other states
+    param.bits.alreadyInit = 0;
+    // Other states reset as needed
+}
+
+bool CorCreateTask(CorHandle_t *handle, void (*func)(void *), void *arg)
+{
+    static uint8_t id = 0;
+    assert_param(handle != NULL);
+    assert_param(func != NULL);
+    if (param.bits.alreadyInit == 0 || id >= param.bits.cap)
+    {
+        return false;
+    }
+    param.coroutine[id].func = func;
+    param.coroutine[id].arg = arg;
+    param.coroutine[id].bits.state = COR_CREATED;
+    param.coroutine[id].bits.swstate = SW_NORMAL;
+    param.coroutine[id].timeout = 0;
+    param.coroutine[id].label = NULL;
+
+    *handle = id;
+    id += 1;
     return true;
 }
 
-void CorDestroy(void)
+void CorSetSwState(SwState state)
 {
-    free(corSys.coroutines);
-    corSys.coroutines = NULL;
-    CAP = 0;
-    INDEX = -1;
+    uint8_t id = param.bits.currid;
+    param.coroutine[id].bits.swstate = state;
 }
-
-bool CorCreate(CorHandle_t *handle, void (*func)(void *), void *arg)
+void Yield(void *label, CorState state, uint32_t timeout)
 {
-    if (handle == NULL || *handle != -1 || func == NULL)
-    {
-        return false;
-    }
-    for (int i = 1; i < corSys.cap; ++i)
-    {
-        if (isNone(i))
-        {
-            COR_FUNC(i) = func;
-            COR_ARG(i) = arg;
-            toReady(i);
-            *handle = i;
-            return true;
-        }
-    }
-    return false;
+    uint8_t id = param.bits.currid;
+    param.coroutine[id].bits.state = state;
+    param.coroutine[id].timeout = timeout;
+    param.coroutine[id].label = label;
+    param.coroutine[id].bits.swstate = SW_ABORT;
 }
-
-bool CorDelete(CorHandle_t *handle)
-{
-    if (isNotNull(handle) || !isIdle(*handle) || isNone(*handle))
-    {
-        return false;
-    }
-    toNone(*handle);
-    COR_FUNC(*handle) = NULL;
-    COR_ARG(*handle) = NULL;
-    COR_LABEL(*handle) = NULL;
-    COR_LABEL_FLAG(*handle) = false;
-    COR_TIMEOUT(*handle) = 0;
-    COR_LAST_TICK(*handle) = 0;
-    *handle = -1;
-    return true;
-}
-
-static int8_t switchNext(void)
-{
-    int8_t next = INDEX + 1;
-    if (next >= CAP)
-    {
-        next = 0;
-    }
-    INDEX = next;
-    return next;
-}
-
-void Yield(void *label)
-{
-    if (isNone(INDEX))
-    {
-        return;
-    }
-    toWaiting(INDEX);
-    CorSetTimeout(0);
-    corSetLabel(label);
-}
-
 void Suspend(CorHandle_t *handle)
 {
+    uint8_t id = *handle;
     if (handle == NULL)
     {
-        toSupend(INDEX);
-        return;
+        id = param.bits.currid;
     }
-    if (*handle == -1 || isNone(*handle) || isTerminated(*handle) || isCreated(*handle))
+    param.coroutine[id].bits.state = COR_SUSPEND;
+    param.coroutine[id].timeout = 0;
+    param.coroutine[id].bits.swstate = SW_ABORT;
+}
+void Resume(CorHandle_t *handle)
+{
+    uint8_t id = *handle;
+    if (handle == NULL)
     {
-        return;
+        id = param.bits.currid;
     }
-    toSupend(*handle);
+    param.coroutine[id].bits.state = COR_READY;
+    param.coroutine[id].timeout = 0;
 }
 
-void CorResume(CorHandle_t *handle)
+void MuxLock(MutexHandle_t *handle)
 {
-    if (*handle == -1 || handle == NULL || isNone(*handle) || isTerminated(*handle))
+    assert_param(handle != NULL);
+    if (*handle == 0)
     {
-        return;
+        *handle |= 1 << param.bits.currid;
     }
-    toReady(*handle);
-    CorSetTimeout(0);
+    else
+    {
+        param.coroutine[param.bits.currid].bits.state = COR_BLOCKED;
+        param.coroutine[param.bits.currid].bits.swstate = SW_ABORT;
+    }
+}
+void MuxUnlock(MutexHandle_t *handle)
+{
+    assert_param(handle != NULL);
+    *handle &= ~(1 << param.bits.currid);
 }
 
-void CorRestart(CorHandle_t *handle)
-{
-    CorResume(handle);
-    corSetLabelFlag(false);
-}
-
-static void corSetLabelFlag(bool labelFlag)
-{
-    COR_LABEL_FLAG(INDEX) = labelFlag;
-}
-
-static bool corGetLabelFlag(void)
-{
-    return COR_LABEL_FLAG(INDEX);
-}
-
-static void corSetLabel(uint32_t *label)
-{
-    COR_LABEL(INDEX) = label;
-}
-
-static uint32_t *corGetLabel(void)
-{
-    return COR_LABEL(INDEX);
-}
-
-void CorSetTimeout(uint32_t timeout)
-{
-    COR_TIMEOUT(INDEX) = timeout;
-    COR_LAST_TICK(INDEX) = getTick();
-}
 
 void *CorBegin(void *label)
 {
-    if (!corGetLabelFlag())
+    uint8_t id = param.bits.currid;
+    if (param.coroutine[id].bits.swstate == SW_NORMAL)
     {
-        corSetLabel(label);
-        corSetLabelFlag(true);
+        param.coroutine[id].bits.swstate = SW_ABORT;
+        param.coroutine[id].label = label;
     }
-    return corGetLabel();
+    return param.coroutine[id].label;
 }
 
-void CorEnd(void *label)
-{
-    corSetLabel(label);
-    corSetLabelFlag(false);
-}
+// CorState CorGetState(CorHandle_t *handle)
+// {
+//     uint8_t id = *handle;
+//     if (handle == NULL)
+//     {
+//         id = param.bits.currid;
+//     }
+//     return param.coroutine[id].bits.state;
+// }
+// uint8_t CorGetId(void)
+// {
+//     return param.bits.currid;
+// }
 
-static void corTimeoutDisp(void)
+bool CorRun(void)
 {
-    for (int i = 0; i < corSys.cap; i++)
+    if(param.bits.alreadyInit == 0)
     {
-        if (isNone(i) || isTerminated(i) || isCreated(i) || !isWaiting(i))
+        return false;
+    }
+    param.bits.currid = 0;
+    for (int i = 0; i < param.bits.cap; i++)
+    {
+        if (param.coroutine[i].bits.state != COR_NONE)
+            param.coroutine[i].bits.state = COR_READY;
+    }
+    param.tick = param.getTick1ms();
+    for (;;)
+    {
+        CorDispatch();
+        CorExe();
+    }
+    return true;
+}
+
+void CorProcessTime(void)
+{
+    uint32_t tick = param.getTick1ms();
+    uint32_t counter = tick - param.tick;
+    for (int i = 0; i < param.bits.cap; i++)
+    {
+        if (param.coroutine[i].bits.state != COR_WAITING)
         {
             continue;
         }
-        if (COR_TIMEOUT(i) > 0)
+        
+        if (param.coroutine[i].timeout > counter)
         {
-            uint32_t tick = getTick();
-            if (tick - COR_LAST_TICK(i) >= COR_TIMEOUT(i))
-            {
-                COR_LAST_TICK(i) = tick;
-                COR_TIMEOUT(i) = 0;
-                toReady(i);
-            }
+            param.coroutine[i].timeout -= counter;
         }
         else
         {
-            toReady(i);
+            param.coroutine[i].timeout = 0;
+            param.coroutine[i].bits.state = COR_READY;
         }
     }
-}
-static int8_t corGetNextTaskId(void)
-{
-    static uint32_t tick = 0;
-    uint32_t mTick = getTick();
-    int8_t index = INDEX;
-    if (index != -1 && isReady(index) && mTick != tick)
-    {
-        tick = mTick;
-        toRunning(index);
-        return index;
-    }
-    corTimeoutDisp();
-    index = switchNext();
-    // 循环一圈找到raday的任务
-    while (!isReady(index))
-    {
-        index = switchNext();
-    }
-    tick = mTick;
-    toRunning(index);
-    return index;
+    param.tick = tick;
 }
 
-void CorStart(void)
+void CorDispatch(void)
 {
-    for (;;)
+    uint8_t id = param.bits.currid;
+    uint8_t nextid = id;
+    uint8_t number=0;
+    CorProcessTime();
+    while (number++ < param.bits.cap)
     {
-        int8_t index = corGetNextTaskId();
-        COR_FUNC(index)
-        (COR_ARG(index));
-        if (isRunning(index))
+        nextid = CorGetNextId(nextid);
+        if(nextid == 0)
         {
-            toReady(index);
+            continue;
         }
+
+        if (param.coroutine[nextid].bits.state == COR_READY)
+        {
+            param.bits.currid = nextid;
+            return;
+        }
+    }
+    param.bits.currid = 0;
+}
+
+static void CorExe(void)
+{
+
+    uint8_t id = param.bits.currid;
+    param.coroutine[id].bits.state = COR_RUNNING;
+    param.coroutine[id].func(param.coroutine[id].arg);
+    if (param.coroutine[id].bits.state == COR_RUNNING)
+    {
+        param.coroutine[id].bits.state = COR_READY;
     }
 }
 
 __attribute__((weak)) void CorIdleFunc(void *arg)
 {
-    Begin()
-    {
-        printf("Function [>void CorIdleFunc(void *arg)<] is a default idle coroutine, please override this method externally.\r\n");
-        Suspend(NULL);
-    }
-    End();
+    // Idle task
 }
-
-/*
-错误处理：您可以考虑在函数返回布尔值的情况下提供更详细的错误信息，以便调用方能够处理错误情况。例如，当创建协程失败时，返回一个错误代码来指示失败的原因。
-
-内存管理：在删除协程时，您可以释放相关的内存资源，以防止内存泄漏。确保在删除协程时，清理相关的数据结构。
-
-更灵活的调度策略：您可以考虑引入更灵活的调度策略，例如优先级调度或时间片轮转调度，以满足不同场景下的需求。
-
-增加协程通信：考虑在协程之间实现通信机制，以便它们能够进行相互协作和共享数据。这可以通过引入消息队列、互斥锁等机制来实现。
-
-异常处理：考虑引入异常处理机制，以便协程能够捕获和处理异常，以增强代码的健壮性和可靠性。
-
-更全面的测试：为您的协程库编写更全面的测试用例，覆盖各种边界情况和异常情况，以确保库的正确性和稳定性。
-
-*/
