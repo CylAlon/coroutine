@@ -5,9 +5,10 @@
  *       Coroutine concurrency is implemented here, but not true concurrency, just switching tasks in a single thread.
  *       All tasks appear to be executing simultaneously, but they are actually switching execution in a single thread.
  *       Then using this library is like using a bare shoe, only it makes complex code look simpler.
- *       Bare metal does not have resource access conflicts, so it does not need any synchronization mechanism (mutex, semaphore).
+ *       Of course, you can also think of it as an upgraded state machine. In contrast to traditional state machines, there is no need to maintain a large number of task flags.
+ *       Bare metal does not have resource access conflicts, so it does not need any synchronization mechanism (semaphore).
  *       Because of the high cost of RTOS, simple tasks or low-end chips can not use RTOS, especially complex logic/high-end chips directly on linux, there is no need for RTOS.
-
+ *       Code repository:https://github.com/CylAlon/coroutine
                                       .                            .
          .......  .                  ...             .           ....
        ...      ...                   ..            ..            ...
@@ -40,14 +41,12 @@
 
 #include "coroutine.h"
 
-static void CorExe(void);
-
 #define COROUTINE_MAX_SIZE (32)
-CorHandle_t CorIdleHandle = 0;
+cor_handle_t CorIdleHandle = 0;
 struct
 {
     Coroutine_t *coroutine;
-    uint32_t (*getTick1ms)(void);
+    uint32_t (*get_tick_1ms)(void);
     uint32_t tick;
     struct
     {
@@ -56,15 +55,25 @@ struct
         uint8_t alreadyInit : 1;
     } bits;
 } param;
-
-static uint8_t CorGetNextId(uint8_t currid)
+/**
+ * @brief Switch to the next node.
+ * @param currid Current id.
+ * @return Next id.
+ */
+static uint8_t cor_get_next_id(uint8_t currid)
 {
     return (currid + 1) % param.bits.cap;
 }
 
-bool CorInit(uint8_t cap, uint32_t (*getTick1ms)(void))
+/**
+ * @brief Initialize coroutine
+ * @param cap Number of tasks
+ * @param get_tick_1ms Get tick
+ * @return true if success
+ */
+bool cor_init(uint8_t cap, uint32_t (*get_tick_1ms)(void))
 {
-    assert_param(getTick1ms != NULL);
+    assert_param(get_tick_1ms != NULL);
     if (cap > COROUTINE_MAX_SIZE - 1)
     {
         return false;
@@ -76,15 +85,20 @@ bool CorInit(uint8_t cap, uint32_t (*getTick1ms)(void))
         return false;
     }
     memset(param.coroutine, 0, sizeof(Coroutine_t) * param.bits.cap);
-    param.getTick1ms = getTick1ms;
+    param.get_tick_1ms = get_tick_1ms;
     param.tick = 0;
     param.bits.currid = 0;
     param.bits.alreadyInit = 1;
-    CorCreateTask(&CorIdleHandle, CorIdleFunc, NULL);
+    cor_create_task(&CorIdleHandle, cor_idle_callback, NULL);
     return true;
 }
-void CorDeinit(void) {
-    if (param.coroutine != NULL) {
+/**
+ * @brief Deinitialize coroutine
+ */
+void cor_deinit(void)
+{
+    if (param.coroutine != NULL)
+    {
         free(param.coroutine);
         param.coroutine = NULL;
     }
@@ -93,16 +107,23 @@ void CorDeinit(void) {
     // Other states reset as needed
 }
 
-bool CorCreateTask(CorHandle_t *handle, void (*func)(void *), void *arg)
+/**
+ * @brief Create a task
+ * @param handle Task handle
+ * @param callback Task callback
+ * @param arg Task argument
+ * @return true if success
+ */
+bool cor_create_task(cor_handle_t *handle, void (*callback)(void *arg), void *arg)
 {
     static uint8_t id = 0;
     assert_param(handle != NULL);
-    assert_param(func != NULL);
+    assert_param(callback != NULL);
     if (param.bits.alreadyInit == 0 || id >= param.bits.cap)
     {
         return false;
     }
-    param.coroutine[id].func = func;
+    param.coroutine[id].callback = callback;
     param.coroutine[id].arg = arg;
     param.coroutine[id].bits.state = COR_CREATED;
     param.coroutine[id].bits.swstate = SW_NORMAL;
@@ -113,13 +134,17 @@ bool CorCreateTask(CorHandle_t *handle, void (*func)(void *), void *arg)
     id += 1;
     return true;
 }
-
-void CorSetSwState(SwState state)
+/**
+ * @brief Set switch state
+ * @param state Switch state
+ * @note If the task is normal, the execution of a process is SW_NORMAL. Operations interrupted in the process, such as hibernation and suspension, are SW_ABORT
+ */
+void cor_set_sw_state(switch_state_t state)
 {
     uint8_t id = param.bits.currid;
     param.coroutine[id].bits.swstate = state;
 }
-void Yield(void *label, CorState state, uint32_t timeout)
+void yield(void *label, cor_state_t state, uint32_t timeout)
 {
     uint8_t id = param.bits.currid;
     param.coroutine[id].bits.state = state;
@@ -127,7 +152,7 @@ void Yield(void *label, CorState state, uint32_t timeout)
     param.coroutine[id].label = label;
     param.coroutine[id].bits.swstate = SW_ABORT;
 }
-void Suspend(CorHandle_t *handle)
+void suspend(cor_handle_t *handle)
 {
     uint8_t id = *handle;
     if (handle == NULL)
@@ -138,7 +163,7 @@ void Suspend(CorHandle_t *handle)
     param.coroutine[id].timeout = 0;
     param.coroutine[id].bits.swstate = SW_ABORT;
 }
-void Resume(CorHandle_t *handle)
+void resume(cor_handle_t *handle)
 {
     uint8_t id = *handle;
     if (handle == NULL)
@@ -149,7 +174,7 @@ void Resume(CorHandle_t *handle)
     param.coroutine[id].timeout = 0;
 }
 
-void MuxLock(MutexHandle_t *handle)
+void mutex_lock(muxtex_handle_t *handle)
 {
     assert_param(handle != NULL);
     if (*handle == 0)
@@ -162,14 +187,13 @@ void MuxLock(MutexHandle_t *handle)
         param.coroutine[param.bits.currid].bits.swstate = SW_ABORT;
     }
 }
-void MuxUnlock(MutexHandle_t *handle)
+void mutex_unlock(muxtex_handle_t *handle)
 {
     assert_param(handle != NULL);
     *handle &= ~(1 << param.bits.currid);
 }
 
-
-void *CorBegin(void *label)
+void *cor_begin(void *label)
 {
     uint8_t id = param.bits.currid;
     if (param.coroutine[id].bits.swstate == SW_NORMAL)
@@ -180,44 +204,9 @@ void *CorBegin(void *label)
     return param.coroutine[id].label;
 }
 
-// CorState CorGetState(CorHandle_t *handle)
-// {
-//     uint8_t id = *handle;
-//     if (handle == NULL)
-//     {
-//         id = param.bits.currid;
-//     }
-//     return param.coroutine[id].bits.state;
-// }
-// uint8_t CorGetId(void)
-// {
-//     return param.bits.currid;
-// }
-
-bool CorRun(void)
+static void cor_process_time(void)
 {
-    if(param.bits.alreadyInit == 0)
-    {
-        return false;
-    }
-    param.bits.currid = 0;
-    for (int i = 0; i < param.bits.cap; i++)
-    {
-        if (param.coroutine[i].bits.state != COR_NONE)
-            param.coroutine[i].bits.state = COR_READY;
-    }
-    param.tick = param.getTick1ms();
-    for (;;)
-    {
-        CorDispatch();
-        CorExe();
-    }
-    return true;
-}
-
-void CorProcessTime(void)
-{
-    uint32_t tick = param.getTick1ms();
+    uint32_t tick = param.get_tick_1ms();
     uint32_t counter = tick - param.tick;
     for (int i = 0; i < param.bits.cap; i++)
     {
@@ -225,7 +214,7 @@ void CorProcessTime(void)
         {
             continue;
         }
-        
+
         if (param.coroutine[i].timeout > counter)
         {
             param.coroutine[i].timeout -= counter;
@@ -239,16 +228,16 @@ void CorProcessTime(void)
     param.tick = tick;
 }
 
-void CorDispatch(void)
+static void cor_dispatch(void)
 {
     uint8_t id = param.bits.currid;
     uint8_t nextid = id;
-    uint8_t number=0;
-    CorProcessTime();
+    uint8_t number = 0;
+    cor_process_time();
     while (number++ < param.bits.cap)
     {
-        nextid = CorGetNextId(nextid);
-        if(nextid == 0)
+        nextid = cor_get_next_id(nextid);
+        if (nextid == 0)
         {
             continue;
         }
@@ -262,19 +251,39 @@ void CorDispatch(void)
     param.bits.currid = 0;
 }
 
-static void CorExe(void)
+static void cor_exec(void)
 {
 
     uint8_t id = param.bits.currid;
     param.coroutine[id].bits.state = COR_RUNNING;
-    param.coroutine[id].func(param.coroutine[id].arg);
+    param.coroutine[id].callback(param.coroutine[id].arg);
     if (param.coroutine[id].bits.state == COR_RUNNING)
     {
         param.coroutine[id].bits.state = COR_READY;
     }
 }
+bool cor_run(void)
+{
+    if (param.bits.alreadyInit == 0)
+    {
+        return false;
+    }
+    param.bits.currid = 0;
+    for (int i = 0; i < param.bits.cap; i++)
+    {
+        if (param.coroutine[i].bits.state != COR_NONE)
+            param.coroutine[i].bits.state = COR_READY;
+    }
+    param.tick = param.get_tick_1ms();
+    for (;;)
+    {
+        cor_dispatch();
+        cor_exec();
+    }
+    return true;
+}
 
-__attribute__((weak)) void CorIdleFunc(void *arg)
+__attribute__((weak)) void cor_idle_callback(void *arg)
 {
     // Idle task
 }
